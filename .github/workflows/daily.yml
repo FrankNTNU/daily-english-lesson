@@ -47,7 +47,7 @@ jobs:
       - name: Build
         run: dotnet build --configuration Release --no-restore
 
-      - name: Publish (optional: produces a self-contained output)
+      - name: Publish
         run: dotnet publish -c Release -o ./publish
 
       - name: Run app (generate lesson & send email)
