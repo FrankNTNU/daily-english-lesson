@@ -1,16 +1,18 @@
 ﻿// See https://aka.ms/new-console-template for more information
 using MailKit.Net.Smtp;
 using MailKit.Security;
-
 using MimeKit;
-
 using System.Text;
+using System.Linq;
+using System.Net;
 
 Console.WriteLine("Starting DailyEnglishLesson.exe...");
 
 string apiUrl = "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-lite:generateContent";
 
-// Required environment variables: GEMINI_API_KEY, SMTP_HOST, SMTP_PORT, SMTP_USER, SMTP_PASS, SMTP_FROM, SMTP_TO
+// Required environment variables:
+// GEMINI_API_KEY, SMTP_HOST, SMTP_PORT, SMTP_USER, SMTP_PASS, SMTP_FROM,
+// SMTP_TO (comma/semicolon/pipe-separated), CEFR_LEVEL (comma/semicolon/pipe-separated or single value)
 string apiKey = Environment.GetEnvironmentVariable("GEMINI_API_KEY")
     ?? throw new InvalidOperationException("GEMINI_API_KEY is not set");
 string smtpHost = Environment.GetEnvironmentVariable("SMTP_HOST")
@@ -22,12 +24,76 @@ string smtpPass = Environment.GetEnvironmentVariable("SMTP_PASS")
     ?? throw new InvalidOperationException("SMTP_PASS is not set");
 string smtpFrom = Environment.GetEnvironmentVariable("SMTP_FROM")
     ?? throw new InvalidOperationException("SMTP_FROM is not set");
-string smtpTo = Environment.GetEnvironmentVariable("SMTP_TO")
-    ?? throw new InvalidOperationException("SMTP_TO is not set");
 
-// Enhanced prompt with IPA requirement and stricter formatting
-string prompt = @"Role & goal
+// Parse recipients
+string smtpToRaw = Environment.GetEnvironmentVariable("SMTP_TO")
+    ?? throw new InvalidOperationException("SMTP_TO is not set");
+string[] smtpToList = smtpToRaw
+    .Split(new[] { ',', ';', '|' }, StringSplitOptions.RemoveEmptyEntries)
+    .Select(s => s.Trim())
+    .Where(s => !string.IsNullOrEmpty(s))
+    .ToArray();
+
+if (smtpToList.Length == 0)
+    throw new InvalidOperationException("SMTP_TO must contain at least one recipient (comma/semicolon/pipe-separated).");
+
+// Parse CEFR levels (map to recipients)
+string cefrRaw = Environment.GetEnvironmentVariable("CEFR_LEVEL") ?? "C1";
+string[] cefrList = cefrRaw
+    .Split(new[] { ',', ';', '|' }, StringSplitOptions.RemoveEmptyEntries)
+    .Select(s => s.Trim().ToUpperInvariant())
+    .Where(s => !string.IsNullOrEmpty(s))
+    .ToArray();
+
+// If no valid CEFR entries, default to C1
+if (cefrList.Length == 0)
+    cefrList = new[] { "C1" };
+
+// If a single CEFR provided, use it for all recipients.
+// If multiple CEFRs provided but counts differ, pad with last value.
+if (cefrList.Length == 1 && smtpToList.Length > 1)
+{
+    cefrList = Enumerable.Repeat(cefrList[0], smtpToList.Length).ToArray();
+}
+else if (cefrList.Length < smtpToList.Length)
+{
+    var padded = cefrList.ToList();
+    while (padded.Count < smtpToList.Length)
+        padded.Add(cefrList.Last());
+    cefrList = padded.ToArray();
+}
+else if (cefrList.Length > smtpToList.Length)
+{
+    // More CEFRs than recipients: ignore extras and warn
+    Console.WriteLine("Warning: more CEFR_LEVEL entries than recipients; extra CEFR values will be ignored.");
+    cefrList = cefrList.Take(smtpToList.Length).ToArray();
+}
+
+Console.WriteLine($"Recipients: {smtpToList.Length}, CEFR mappings: {cefrList.Length}");
+
+// Shared HttpClient and SmtpClient
+using var httpClient = new HttpClient();
+using var smtp = new SmtpClient();
+
+try
+{
+    // Connect and authenticate SMTP once
+    await smtp.ConnectAsync(smtpHost, smtpPort, SecureSocketOptions.StartTls);
+    await smtp.AuthenticateAsync(smtpUser, smtpPass);
+
+    for (int i = 0; i < smtpToList.Length; i++)
+    {
+        var recipient = smtpToList[i];
+        var cefr = cefrList[i];
+
+        Console.WriteLine($"Generating lesson for {recipient} (CEFR: {cefr})...");
+
+        // Build prompt per recipient/CEFR
+        string prompt = $@"Role & goal
 You are an expert English instructor specializing in natural, advanced-level English for adult learners. Your task is to generate one short daily English lesson suitable for a quick email that can be read in under one minute.
+
+Target CEFR level: {cefr}
+Adjust vocabulary, sentence complexity and register to match the specified CEFR level. Use examples and phrasing appropriate for that level.
 
 Audience
 The learner is an advanced non-native speaker aiming for native-like fluency and high-stakes exams (e.g. IELTS Band 9). Avoid beginner explanations.
@@ -68,83 +134,96 @@ Style rules
 Quality bar
 Every example sentence must sound like something a well-educated native speaker would actually say in professional or daily life.";
 
-var requestPayload = new
-{
-    contents = new[]
-    {
-        new
+        var requestPayload = new
         {
-            parts = new[]
+            contents = new[]
             {
-                new { text = prompt }
+                new { parts = new[] { new { text = prompt } } }
             }
+        };
+
+        var jsonPayload = System.Text.Json.JsonSerializer.Serialize(requestPayload);
+        var request = new HttpRequestMessage(HttpMethod.Post, $"{apiUrl}?key={apiKey}")
+        {
+            Content = new StringContent(jsonPayload, Encoding.UTF8, "application/json")
+        };
+
+        var response = await httpClient.SendAsync(request);
+        response.EnsureSuccessStatusCode();
+        var responseContent = await response.Content.ReadAsStringAsync();
+        using var document = System.Text.Json.JsonDocument.Parse(responseContent);
+        var generatedText = document
+            .RootElement
+            .GetProperty("candidates")[0]
+            .GetProperty("content")
+            .GetProperty("parts")[0]
+            .GetProperty("text")
+            .GetString() ?? "(no content)";
+
+        Console.WriteLine($"Generated content length: {generatedText.Length}");
+
+        // Build professional HTML email with bold, large title
+        var lines = (generatedText ?? string.Empty).Split(new[] { "\r\n", "\n" }, StringSplitOptions.None);
+        var firstLine = lines.FirstOrDefault(l => !string.IsNullOrWhiteSpace(l)) ?? "Daily Lesson";
+        var restOfContent = string.Join("\n", lines.SkipWhile(l => string.IsNullOrWhiteSpace(l)).Skip(1));
+
+        string EncodeHtml(string s) => WebUtility.HtmlEncode(s ?? string.Empty);
+
+        var emailBodyBuilder = new StringBuilder();
+        emailBodyBuilder.AppendLine("<html><head><meta charset='utf-8'/></head><body style='font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;'>");
+        emailBodyBuilder.AppendLine("<div style='border-bottom: 2px solid #333; padding-bottom: 10px; margin-bottom: 20px;'>");
+        emailBodyBuilder.AppendLine("<h2 style='margin: 0; color: #333;'>DAILY ENGLISH LESSON</h2>");
+        emailBodyBuilder.AppendLine($"<p style='margin: 5px 0 0 0; color: #666;'>{EncodeHtml(DateTime.UtcNow.ToString("dddd, MMMM d, yyyy"))}</p>");
+        emailBodyBuilder.AppendLine("</div>");
+        emailBodyBuilder.AppendLine($"<div style='font-size: 22px; font-weight: bold; margin-bottom: 15px; color: #000;'>{EncodeHtml(firstLine)}</div>");
+        emailBodyBuilder.AppendLine($"<pre style='font-family: Arial, sans-serif; white-space: pre-wrap; line-height: 1.6;'>{EncodeHtml(restOfContent)}</pre>");
+        emailBodyBuilder.AppendLine("<div style='border-top: 2px solid #333; margin-top: 20px; padding-top: 10px;'></div>");
+        emailBodyBuilder.AppendLine("</body></html>");
+        string emailHtml = emailBodyBuilder.ToString();
+
+        var plainBuilder = new StringBuilder();
+        plainBuilder.AppendLine("DAILY ENGLISH LESSON");
+        plainBuilder.AppendLine($"{DateTime.UtcNow:dddd, MMMM d, yyyy}");
+        plainBuilder.AppendLine();
+        plainBuilder.AppendLine(generatedText.Trim());
+        plainBuilder.AppendLine();
+        plainBuilder.AppendLine($"Target CEFR level: {cefr}");
+        plainBuilder.AppendLine();
+        plainBuilder.AppendLine("This message was generated automatically for educational purposes.");
+        string plainBody = plainBuilder.ToString();
+
+        // Build message for this recipient
+        var message = new MimeMessage();
+        message.From.Add(MailboxAddress.Parse(smtpFrom));
+        try
+        {
+            message.To.Add(MailboxAddress.Parse(recipient));
+        }
+        catch (Exception ex)
+        {
+            Console.Error.WriteLine($"Warning: invalid recipient '{recipient}' skipped: {ex.Message}");
+            continue;
+        }
+        message.Subject = $"Daily English Lesson — {DateTime.UtcNow:MMM d, yyyy}";
+        var bodyBuilder = new BodyBuilder { TextBody = plainBody, HtmlBody = emailHtml };
+        message.Body = bodyBuilder.ToMessageBody();
+
+        // Send message
+        try
+        {
+            await smtp.SendAsync(message);
+            Console.WriteLine($"✓ Email sent to {recipient}");
+        }
+        catch (Exception ex)
+        {
+            Console.Error.WriteLine($"✗ Failed to send to {recipient}: {ex.Message}");
         }
     }
-};
-
-using var httpClient = new HttpClient();
-var jsonPayload = System.Text.Json.JsonSerializer.Serialize(requestPayload);
-var request = new HttpRequestMessage(HttpMethod.Post, $"{apiUrl}?key={apiKey}")
-{
-    Content = new StringContent(jsonPayload, Encoding.UTF8, "application/json")
-};
-
-var response = await httpClient.SendAsync(request);
-response.EnsureSuccessStatusCode();
-
-var responseContent = await response.Content.ReadAsStringAsync();
-using var document = System.Text.Json.JsonDocument.Parse(responseContent);
-var generatedText = document
-    .RootElement
-    .GetProperty("candidates")[0]
-    .GetProperty("content")
-    .GetProperty("parts")[0]
-    .GetProperty("text")
-    .GetString();
-
-Console.WriteLine("Generated Daily English Lesson:");
-Console.WriteLine(generatedText);
-
-// Build professional HTML email with bold, large title
-var emailBody = new StringBuilder();
-emailBody.AppendLine("<html><body style='font-family: Arial, sans-serif; max-width: 600px; margin: 0 auto;'>");
-emailBody.AppendLine("<div style='border-bottom: 2px solid #333; padding-bottom: 10px; margin-bottom: 20px;'>");
-emailBody.AppendLine("<h2 style='margin: 0; color: #333;'>DAILY ENGLISH LESSON</h2>");
-emailBody.AppendLine($"<p style='margin: 5px 0 0 0; color: #666;'>{DateTime.UtcNow:dddd, MMMM d, yyyy}</p>");
-emailBody.AppendLine("</div>");
-
-// Extract the phrase from generatedText (assumes format: "Today's [type]: [phrase] /IPA/")
-var lines = generatedText?.Split('\n') ?? Array.Empty<string>();
-var firstLine = lines.FirstOrDefault() ?? "";
-var restOfContent = string.Join("\n", lines.Skip(1));
-
-emailBody.AppendLine($"<div style='font-size: 22px; font-weight: bold; margin-bottom: 15px; color: #000;'>{System.Security.SecurityElement.Escape(firstLine)}</div>");
-emailBody.AppendLine($"<pre style='font-family: Arial, sans-serif; white-space: pre-wrap; line-height: 1.6;'>{System.Security.SecurityElement.Escape(restOfContent)}</pre>");
-
-emailBody.AppendLine("<div style='border-top: 2px solid #333; margin-top: 20px; padding-top: 10px;'></div>");
-emailBody.AppendLine("</body></html>");
-
-// Build email message
-var message = new MimeMessage();
-message.From.Add(MailboxAddress.Parse(smtpFrom));
-message.To.Add(MailboxAddress.Parse(smtpTo));
-message.Subject = $"Daily English Lesson — {DateTime.UtcNow:MMM d, yyyy}";
-message.Body = new TextPart("html") { Text = emailBody.ToString() };  // Changed to "html"
-
-// Send email via SMTP
-try
-{
-    using var smtp = new SmtpClient();
-    await smtp.ConnectAsync(smtpHost, smtpPort, SecureSocketOptions.StartTls);
-    await smtp.AuthenticateAsync(smtpUser, smtpPass);
-    await smtp.SendAsync(message);
-    await smtp.DisconnectAsync(true);
-    Console.WriteLine("✓ Email sent successfully.");
 }
-catch (Exception ex)
+finally
 {
-    Console.Error.WriteLine($"✗ Failed to send email: {ex.Message}");
-    throw;
+    if (smtp.IsConnected)
+        await smtp.DisconnectAsync(true);
 }
 
 Console.WriteLine("DailyEnglishLesson.exe finished.");
