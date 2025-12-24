@@ -1,0 +1,55 @@
+name: Daily English Lesson
+
+on:
+  # scheduled run — cron is in UTC
+  schedule:
+    - cron: '0 8 * * *'   # daily at 08:00 UTC (adjust as needed)
+  workflow_dispatch: {}   # allows manual run from Actions UI
+
+concurrency:
+  group: daily-english-lesson
+  cancel-in-progress: true
+
+jobs:
+  run-daily-lesson:
+    runs-on: ubuntu-latest
+
+    env:
+      # map repo secrets to environment variables used by your app
+      GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+      SMTP_HOST:       ${{ secrets.SMTP_HOST }}
+      SMTP_PORT:       ${{ secrets.SMTP_PORT }}
+      SMTP_USER:       ${{ secrets.SMTP_USER }}
+      SMTP_PASS:       ${{ secrets.SMTP_PASS }}
+      SMTP_FROM:       ${{ secrets.SMTP_FROM }}
+      SMTP_TO:         ${{ secrets.SMTP_TO }}
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup .NET 9
+        uses: actions/setup-dotnet@v3
+        with:
+          dotnet-version: '9.0.x'
+
+      - name: Cache NuGet packages
+        uses: actions/cache@v4
+        with:
+          path: ~/.nuget/packages
+          key: ${{ runner.os }}-nuget-${{ hashFiles('**/*.csproj') }}
+          restore-keys: |
+            ${{ runner.os }}-nuget-
+
+      - name: Restore
+        run: dotnet restore
+
+      - name: Build
+        run: dotnet build --configuration Release --no-restore
+
+      - name: Publish (optional: produces a self-contained output)
+        run: dotnet publish -c Release -o ./publish
+
+      - name: Run app (generate lesson & send email)
+        # If your project is not at repository root set --project ./path/to/YourProject.csproj
+        run: dotnet run --configuration Release --no-build
