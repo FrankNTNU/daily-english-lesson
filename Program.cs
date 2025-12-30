@@ -1,10 +1,13 @@
 ﻿// See https://aka.ms/new-console-template for more information
 using MailKit.Net.Smtp;
 using MailKit.Security;
+
 using MimeKit;
-using System.Text;
+
+using System;
 using System.Linq;
 using System.Net;
+using System.Text;
 
 Console.WriteLine("Starting DailyEnglishLesson.exe...");
 
@@ -87,52 +90,96 @@ try
         var cefr = cefrList[i];
 
         Console.WriteLine($"Generating lesson for {recipient} (CEFR: {cefr})...");
-
+        var dayOfWeek = DateTime.UtcNow.DayOfWeek.ToString();
         // Build prompt per recipient/CEFR
         string prompt = $@"Role & goal
-You are an expert English instructor specializing in natural, advanced-level English for adult learners. Your task is to generate one short daily English lesson suitable for a quick email that can be read in under one minute.
+You are an expert English instructor. Your task is to generate one short daily English lesson suitable for a quick email that can be read in under one minute.
 
 Target CEFR level: {cefr}
-Adjust vocabulary, sentence complexity and register to match the specified CEFR level. Use examples and phrasing appropriate for that level.
+This CEFR level defines the learner’s English ability.
+Adjust vocabulary choice, sentence complexity, explanation depth, tone, and example difficulty to match this level precisely.
+Do NOT assume the learner is advanced unless the CEFR level explicitly indicates it (C1 or C2).
 
 Audience
-The learner is an advanced non-native speaker aiming for native-like fluency and high-stakes exams (e.g. IELTS Band 9). Avoid beginner explanations.
+The learner is an adult non-native English speaker at the specified CEFR level.
+Use language that is clear, natural, and appropriate for this level.
+Avoid both over-simplification and unnecessary complexity.
+
+Lesson category rotation (STRICT)
+Today is: {dayOfWeek}
+
+You MUST follow this mapping exactly:
+
+- Monday → Phrase  
+  A fixed multi-word expression with a stable meaning appropriate to the CEFR level
+
+- Tuesday → Collocation  
+  A natural word partnership commonly used by native speakers and learnable at this level
+
+- Wednesday → Usage  
+  A grammatical, pragmatic, or usage distinction that is appropriate for this CEFR level
+
+- Thursday → Register & tone  
+  How word choice or structure changes depending on formality, context, or relationship, scaled to this level
+
+- Friday → Precision & nuance  
+  Fine distinctions suitable for the learner’s level
+  (At lower CEFR levels, keep contrasts simple; at higher levels, allow subtle nuance.)
+
+- Saturday → Contrast & refinement  
+  Compare TWO different items introduced earlier this week.
+  Focus on differences in meaning, tone, or usage.
+  Do NOT introduce any new words, phrases, or structures.
+
+- Sunday → Applied usage  
+  Reuse ONE item introduced earlier this week.
+  Show how it works naturally in a slightly longer, realistic context.
+  Do NOT introduce any new words, phrases, or structures.
+
+Rules:
+- Follow today’s assigned category only
+- Do NOT mix categories
+- Do NOT reuse or paraphrase items that belong to other days’ categories
+- On weekends, reuse ONLY items from earlier this week
+- Ensure all content is appropriate to the specified CEFR level
 
 Lesson constraints
-- Focus on one item only: a phrase, collocation, or subtle usage point
-- Prioritize natural spoken and written English, not textbook language
-- Avoid rare or obscure expressions
-- Avoid slang unless it is widely used and neutral in tone
+- Focus on one clear teaching objective
+- Prioritize natural spoken and written English
+- Avoid rare, obscure, or gimmicky expressions
+- Avoid slang unless it is widely used and appropriate for the CEFR level
+- Avoid expressions that would be confusing or unnatural for this level
 
-Required structure (strict)
+Required structure (STRICT)
 Produce the lesson using exactly this format:
 
-Today's [word/phrase/usage]: [the actual phrase] /IPA transcription/
+Today's [category]: [the actual word/phrase/usage] /IPA transcription/
 
 Meaning:
-[One clear sentence explaining the meaning]
+[One clear sentence explaining the meaning, scaled to the CEFR level]
 
 Example:
-[One natural example sentence]
+[One natural example sentence appropriate to the CEFR level]
 
 Common mistake:
-❌ [Incorrect usage example]
-✅ [Correct usage example]
+❌ [A typical mistake made by learners at this CEFR level]
+✅ [A corrected version appropriate to this CEFR level]
 
 Natural tip:
-[One practical insight about usage, register, or context]
+[One practical insight about usage, register, or context suitable for this level]
 
 Style rules
-- Concise and confident
+- Clear, concise, and level-appropriate
 - No emojis
 - No meta commentary
 - No greetings or sign-offs
 - No markdown symbols other than ❌ and ✅
 - Plain text only
-- IPA transcription must be in slashes immediately after the phrase
+- IPA transcription must be in slashes immediately after the item
 
 Quality bar
-Every example sentence must sound like something a well-educated native speaker would actually say in professional or daily life.";
+All explanations and examples must sound natural while remaining fully accessible to a learner at the specified CEFR level.
+";
 
         var requestPayload = new
         {
