@@ -3,7 +3,7 @@ name: Daily English Lesson
 on:
   # scheduled run — cron is in UTC
   schedule:
-    - cron: '0 8 * * *'   # daily at 08:00 UTC (adjust as needed)
+    - cron: '0 2 * * *'   # runs daily at 02:00 UTC = 10:00 GMT+8
   workflow_dispatch: {}   # allows manual run from Actions UI
 
 concurrency:
